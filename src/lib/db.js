@@ -8,7 +8,11 @@ export const supabase = createClient(URL, KEY);
 // Cliente secundario. Se usa SOLO para crear cuentas de alumnos:
 // al no guardar sesión, el coach no pierde la suya al dar de alta a alguien.
 const silencioso = createClient(URL, KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    storageKey: "proclub-alta-alumnos",
+  },
 });
 
 // Los alumnos entran con usuario, no con email. Internamente lo convertimos
