@@ -1,4 +1,8 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
+import {
+  signIn, signOut, loadAll, saveStudent,
+  createStudent, requestMembership, setEstado,
+} from "./lib/db";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import {
   Crown, Search, Dumbbell, TrendingUp, LogOut, Plus, Trash2,
@@ -104,12 +108,8 @@ function buildEx(names, bases, growth, times) {
 }
 
 
-// Sin datos demo — los alumnos se crean desde el panel del coach
-const STUDENTS = [];
-// Credenciales del coach — CAMBIÁ la contraseña antes de lanzar
-const USERS = [
-  { id: "u0-coach", username: "coach", password: "proclub2026", role: "admin", name: "Coach ProClub", status: "active" },
-];
+// Los datos ahora viven en Supabase. Estas listas arrancan vacías
+// y se llenan al iniciar sesión.
 const LINE_COLORS = [LIME, GOLD, "#7DA0FA", "#E07B7B", "#C77DFF", "#FF9F5A", "#5AD1C7", "#FFD166", "#A0E7E5", "#F7A1C4"];
 
 /* ─── BASE64 LOGOS (mismas del prototipo anterior) ─────── */
@@ -253,36 +253,27 @@ function Login({ users, setUsers, students, setStudents, onLogin }) {
   const [err, setErr] = useState("");
   const [req, setReq] = useState({ name: "", username: "", password: "" });
   const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  const go = () => {
-    const user = users.find(x =>
-      x.username.toLowerCase() === u.trim().toLowerCase() &&
-      x.password === p &&
-      x.status === "active"
-    );
-    if (!user) {
-      const pending = users.find(x => x.username.toLowerCase() === u.trim().toLowerCase() && x.status === "pending");
-      if (pending) { setErr("Tu solicitud está pendiente de aprobación. El coach te avisará."); return; }
-      setErr("Usuario o contraseña incorrectos");
-      return;
-    }
-    onLogin(user);
+  const go = async () => {
+    if (busy) return;
+    if (!u.trim() || !p) { setErr("Completá usuario y contraseña"); return; }
+    setErr(""); setBusy(true);
+    const res = await signIn(u, p);
+    setBusy(false);
+    if (res.error) { setErr(res.error); return; }
+    onLogin();
   };
 
-  const sendRequest = () => {
+  const sendRequest = async () => {
+    if (busy) return;
     if (!req.name.trim() || !req.username.trim() || !req.password.trim()) { setErr("Completá todos los campos"); return; }
-    if (users.some(x => x.username.toLowerCase() === req.username.trim().toLowerCase())) { setErr("Ese usuario ya existe"); return; }
-    const newId = uuid();
-    const newStudent = {
-      id: newId, name: req.name.trim(),
-      since: new Date().toLocaleDateString("es-AR", { month: "short", year: "numeric" }),
-      inactive: 0, lastDay: "Aún no registra",
-      exercises: [emptyExercise("Sentadilla")],
-    };
-    setStudents(p => [...p, newStudent]);
-    setUsers(p => [...p, { id: uuid(), username: req.username.trim(), password: req.password, role: "alumno", studentId: newId, status: "pending", requestedName: req.name.trim() }]);
+    if (req.password.length < 6) { setErr("La contraseña debe tener al menos 6 caracteres"); return; }
+    setErr(""); setBusy(true);
+    const res = await requestMembership(req);
+    setBusy(false);
+    if (res.error) { setErr(res.error); return; }
     setSent(true);
-    setErr("");
   };
 
   return (
@@ -1606,46 +1597,49 @@ function AdminPanel({ students, users, setUsers, setStudents }) {
     showToast("Semana devuelta al alumno para corregir");
   };
 
-  const addMember = () => {
+  const [saving, setSaving] = useState(false);
+
+  const addMember = async () => {
     setFormErr("");
+    if (saving) return;
     if (!form.name.trim() || !form.username.trim() || !form.password.trim()) { setFormErr("Completá todos los campos"); return; }
-    if (users.some(u => u.username.toLowerCase() === form.username.trim().toLowerCase())) { setFormErr("Ese usuario ya existe"); return; }
-    const newId = uuid();
-    setStudents(p => [...p, { id: newId, name: form.name.trim(), since: new Date().toLocaleDateString("es-AR", { month: "short", year: "numeric" }), inactive: 0, lastDay: "Aún no registra", exercises: [emptyExercise("Sentadilla")], blocks: [] }]);
-    setUsers(p => [...p, { id: uuid(), username: form.username.trim(), password: form.password, role: "alumno", studentId: newId, status: "active" }]);
+    if (form.password.length < 6) { setFormErr("La contraseña debe tener al menos 6 caracteres"); return; }
+    setSaving(true);
+    const res = await createStudent(form);
+    setSaving(false);
+    if (res.error) { setFormErr(res.error); return; }
+    const nombre = form.name.trim();
+    setStudents(p => [...p, { id: res.id, name: nombre, since: new Date().toLocaleDateString("es-AR", { month: "short", year: "numeric" }), inactive: 0, lastDay: "Aún no registra", exercises: [emptyExercise("Sentadilla")], blocks: [] }]);
+    setUsers(p => [...p, { id: res.id, username: form.username.trim().toLowerCase(), role: "alumno", studentId: res.id, status: "active", name: nombre }]);
     setForm({ name: "", username: "", password: "" });
-    showToast(`✓ ${form.name.trim()} dado de alta`);
+    showToast(`✓ ${nombre} dado de alta`);
   };
 
-  const deactivate = id => {
-    setUsers(p => {
-      const hasUser = p.some(u => u.role === "alumno" && u.studentId === id);
-      // Si el alumno no tiene user (datos demo), creamos uno inactivo para poder darlo de baja
-      if (!hasUser) return [...p, { id: `u_baja_${id}`, role: "alumno", studentId: id, status: "inactive", username: `alumno_${id}`, password: "" }];
-      return p.map(u => u.role === "alumno" && u.studentId === id ? { ...u, status: "inactive" } : u);
-    });
+  const deactivate = async id => {
+    await setEstado(id, "inactivo");
+    setUsers(p => p.map(u => u.studentId === id ? { ...u, status: "inactive" } : u));
     setConfirmOff(null);
     showToast(`Alumno dado de baja · historial guardado`);
   };
 
-  const reactivate = id => {
+  const reactivate = async id => {
     const s = students.find(s => s.id === id);
-    setUsers(p => p.map(u => u.role === "alumno" && u.studentId === id ? { ...u, status: "active" } : u));
+    await setEstado(id, "activo");
+    setUsers(p => p.map(u => u.studentId === id ? { ...u, status: "active" } : u));
     showToast(`${s?.name} reactivado`);
   };
 
-  const approve = (userId) => {
-    setUsers(p => p.map(u => u.id === userId ? { ...u, status: "active" } : u));
-    const u = users.find(u => u.id === userId);
-    const s = students.find(s => s.id === u?.studentId);
-    showToast(`✓ ${s?.name || "Alumno"} aprobado · ya puede ingresar`);
+  const approve = async (userId) => {
+    const u = users.find(x => x.id === userId);
+    await setEstado(userId, "activo");
+    setUsers(p => p.map(x => x.id === userId ? { ...x, status: "active" } : x));
+    showToast(`✓ ${u?.name || "Alumno"} aprobado · ya puede ingresar`);
   };
 
-  const reject = (userId) => {
-    const u = users.find(u => u.id === userId);
-    const s = students.find(s => s.id === u?.studentId);
-    setUsers(p => p.filter(u => u.id !== userId));
-    setStudents(p => p.filter(s => s.id !== u?.studentId));
+  const reject = async (userId) => {
+    await setEstado(userId, "rechazado");
+    setUsers(p => p.filter(x => x.id !== userId));
+    setStudents(p => p.filter(s => s.id !== userId));
     showToast(`Solicitud rechazada`);
   };
 
@@ -1986,17 +1980,59 @@ function Header({ name, role, onLogout }) {
 
 /* ─── APP ROOT ───────────────────────────────────────────── */
 export default function App() {
-  const [users, setUsers] = useState(USERS);
-  const [students, setStudents] = useState(STUDENTS);
-  // Intentar restaurar sesión del localStorage (funciona en producción, no en artifact)
-  const [me, setMe] = useState(() => loadSession(USERS));
+  const [users, setUsers] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [me, setMe] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const guardado = useRef({});
 
-  const handleLogin = (user) => { saveSession(user); setMe(user); };
-  const handleLogout = () => { clearSession(); setMe(null); };
+  // Carga inicial: si hay sesión abierta, trae perfiles y alumnos desde Supabase
+  const bootstrap = async () => {
+    setLoading(true);
+    const datos = await loadAll();
+    if (!datos) {
+      guardado.current = {};
+      setMe(null); setUsers([]); setStudents([]); setLoading(false);
+      return;
+    }
+    guardado.current = Object.fromEntries(datos.students.map(s => [s.id, s]));
+    setUsers(datos.users);
+    setStudents(datos.students);
+    setMe(datos.me);
+    setLoading(false);
+  };
+
+  useEffect(() => { bootstrap(); }, []);
+
+  // Autoguardado: sube solo los alumnos cuyos datos cambiaron
+  useEffect(() => {
+    if (!me) return;
+    const t = setTimeout(() => {
+      students.forEach(s => {
+        if (guardado.current[s.id] !== s) {
+          guardado.current[s.id] = s;
+          saveStudent(s);
+        }
+      });
+    }, 700);
+    return () => clearTimeout(t);
+  }, [students, me]);
+
+  const handleLogout = async () => {
+    await signOut();
+    guardado.current = {};
+    setMe(null); setUsers([]); setStudents([]);
+  };
 
   const setSelf = fn => setStudents(prev => prev.map(s => s.id !== me.studentId ? s : (typeof fn === "function" ? fn(s) : fn)));
 
-  if (!me) return <Login users={users} setUsers={setUsers} students={students} setStudents={setStudents} onLogin={handleLogin} />;
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center" style={{ background: BG }}>
+      <p className="text-sm" style={{ color: MUTED }}>Cargando…</p>
+    </div>
+  );
+
+  if (!me) return <Login users={users} setUsers={setUsers} students={students} setStudents={setStudents} onLogin={bootstrap} />;
 
   const myStudent = me.role === "alumno" ? students.find(s => s.id === me.studentId) : null;
   const displayName = me.role === "admin" ? (me.name || me.username) : myStudent?.name;
