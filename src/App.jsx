@@ -3,7 +3,7 @@ import {
   signIn, signOut, loadAll, saveStudent,
   createStudent, requestMembership, setEstado,
   loadFrase, saveFrase, loadCiclo, saveCiclo,
-  onEstadoGuardado, reintentarPendientes,
+  onEstadoGuardado, reintentarPendientes, normalizarUsuario,
 } from "./lib/db";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import {
@@ -40,6 +40,18 @@ const iStyle = { colorScheme: "dark", color: "#edeaf2", background: "#17151e" };
 
 /* ─── DATA HELPERS ───────────────────────────────────────── */
 const emptySet  = () => ({ reps: null, weight: null, seconds: null });
+
+// Los discos van de a 2,5 kg; evita que queden 77,49999 por el punto flotante
+const redondearPeso = v => Math.round(v * 2) / 2;
+
+// Si la serie está vacía, el − y el + arrancan desde la serie anterior
+const pesoBase = (wk, si) => {
+  for (let i = si - 1; i >= 0; i--) {
+    const p = (wk.sets || [])[i]?.weight;
+    if (p != null) return p;
+  }
+  return 0;
+};
 const emptyWeek = () => ({ sets: [emptySet(), emptySet(), emptySet()], date: "", time: null, seconds: null, status: "draft", finished: false, hard: false, notes: "" });
 // status: "draft" = trabajando | "submitted" = enviado al coach | "approved" = aprobado por coach
 const done = w => w.status === "approved";
@@ -315,11 +327,22 @@ function Login({ users, setUsers, students, setStudents, onLogin }) {
         ) : (
           <div className="space-y-3">
             <p className="text-xs text-gray-400 text-center pb-1">Completá tus datos · el coach aprobará tu acceso</p>
-            {[["name","Nombre completo", User], ["username","Usuario que querés", User], ["password","Contraseña", Lock]].map(([f, ph, Icon]) => (
-              <div key={f} className="relative">
-                <Icon size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
-                <input value={req[f]} onChange={e => setReq(p => ({ ...p, [f]: e.target.value }))}
-                  placeholder={ph} className={`w-full pl-10 pr-4 py-3 text-sm ${INPUT}`} style={iStyle} />
+            {[["name","Nombre completo", User], ["username","Usuario (sin espacios)", User], ["password","Contraseña \u00b7 m\u00ednimo 6", Lock]].map(([f, ph, Icon]) => (
+              <div key={f}>
+                <div className="relative">
+                  <Icon size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
+                  <input value={req[f]} type={f === "password" ? "password" : "text"}
+                    autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                    onChange={e => setReq(p => ({
+                      ...p, [f]: f === "username" ? normalizarUsuario(e.target.value) : e.target.value
+                    }))}
+                    placeholder={ph} className={`w-full pl-10 pr-4 py-3 text-sm ${INPUT}`} style={iStyle} />
+                </div>
+                {f === "username" && req.username && (
+                  <p className="text-[10px] mt-1 pl-1" style={{ color: MUTED }}>
+                    Vas a entrar con: <span style={{ color: TEXT }}>{req.username}</span>
+                  </p>
+                )}
               </div>
             ))}
             {err && <p className="text-xs text-center" style={{ color: RED }}>{err}</p>}
@@ -899,23 +922,45 @@ function ExerciseCard({ ex, exIdx, color, onUpdateWeek, onUpdateSet, onAddSet, o
                 <div className="flex-1 text-center py-1.5 text-sm rounded-xl text-white font-semibold" style={{ background: CARD2 }}>{s.weight ?? "—"} kg</div>
               </div>
             ) : (
-              <div key={si} className="flex items-center gap-2">
-                <span className="text-[10px] text-gray-600 w-12 shrink-0">Serie {si + 1}</span>
+              <div key={si} className="flex items-center gap-1.5">
+                <span className="w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold"
+                  style={{ background: CARD2, color: MUTED }}>{si + 1}</span>
+
                 <input type="number" inputMode="numeric" value={s.reps ?? ""} placeholder="reps"
                   onChange={e => onUpdateSet(exIdx, week, si, "reps", e.target.value === "" ? null : +e.target.value)}
-                  className={`flex-1 text-center py-2 text-sm ${INPUT}`} style={iStyle} />
-                <span className="text-gray-600 text-xs">×</span>
-                <input type="number" inputMode="decimal" value={s.weight ?? ""} placeholder="kg"
-                  onChange={e => onUpdateSet(exIdx, week, si, "weight", e.target.value === "" ? null : +e.target.value)}
-                  className={`flex-1 text-center py-2 text-sm ${INPUT}`} style={iStyle} />
+                  className={`w-14 shrink-0 text-center py-3 text-base font-semibold ${INPUT}`} style={iStyle} />
+
+                {/* Peso con botones de ajuste: el dedo no tiene que acertar el teclado */}
+                <div className="flex-1 flex items-center rounded-xl overflow-hidden"
+                  style={{ background: CARD2, border: `1px solid ${BORDER}` }}>
+                  <button
+                    onClick={() => onUpdateSet(exIdx, week, si, "weight", Math.max(0, redondearPeso((s.weight ?? pesoBase(wk, si)) - 2.5)))}
+                    className="px-3 py-3 text-lg leading-none font-semibold transition-all active:scale-90"
+                    style={{ color: MUTED }}>−</button>
+                  <input type="number" inputMode="decimal" step="0.5" value={s.weight ?? ""} placeholder="kg"
+                    onChange={e => onUpdateSet(exIdx, week, si, "weight", e.target.value === "" ? null : +e.target.value)}
+                    className="flex-1 min-w-0 text-center py-3 text-base font-semibold bg-transparent outline-none"
+                    style={{ color: TEXT }} />
+                  <button
+                    onClick={() => onUpdateSet(exIdx, week, si, "weight", redondearPeso((s.weight ?? pesoBase(wk, si)) + 2.5))}
+                    className="px-3 py-3 text-lg leading-none font-semibold transition-all active:scale-90"
+                    style={{ color: LIME }}>+</button>
+                </div>
+
                 {(wk.sets || []).length > 1 && (
-                  <button onClick={() => onRemoveSet(exIdx, week, si)} className="text-gray-700 hover:text-red-400 transition"><Trash2 size={13} /></button>
+                  <button onClick={() => onRemoveSet(exIdx, week, si)}
+                    className="p-2 shrink-0 text-gray-700 hover:text-red-400 transition"><Trash2 size={14} /></button>
                 )}
               </div>
             ))}
             {!locked && (wk.sets || []).length < 6 && (
-              <button onClick={() => onAddSet(exIdx, week)} className="flex items-center gap-1 text-xs font-medium" style={{ color: LIME }}>
-                <Plus size={12} /> Agregar serie
+              <button onClick={() => onAddSet(exIdx, week)}
+                className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-semibold transition-all active:scale-[.98]"
+                style={{ background: LIME_S, color: LIME, border: `1px solid ${LIME}33` }}>
+                <Plus size={14} /> Agregar serie
+                {(wk.sets || []).some(s => s.reps != null || s.weight != null) && (
+                  <span className="font-normal opacity-70">· copia la anterior</span>
+                )}
               </button>
             )}
           </div>
@@ -1425,9 +1470,18 @@ function StudentPanel({ student, setStudent, frase }) {
       })
     })
   );
+  // La serie nueva arranca con los valores de la anterior: casi siempre
+  // repetís reps y ajustás el peso, no al revés.
   const onAddSet = (exIdx, wIdx) => mutate(exs =>
     exs.map((ex, i) => i !== exIdx ? ex : {
-      ...ex, weeks: ex.weeks.map((w, wi) => wi !== wIdx || w.sets.length >= 6 ? w : { ...w, sets: [...w.sets, emptySet()] })
+      ...ex, weeks: ex.weeks.map((w, wi) => {
+        if (wi !== wIdx || w.sets.length >= 6) return w;
+        const ult = w.sets[w.sets.length - 1];
+        const nueva = ult && (ult.reps != null || ult.weight != null)
+          ? { ...emptySet(), reps: ult.reps, weight: ult.weight }
+          : emptySet();
+        return { ...w, sets: [...w.sets, nueva] };
+      })
     })
   );
   const onRemoveSet = (exIdx, wIdx, sIdx) => mutate(exs =>
@@ -1879,6 +1933,7 @@ function AdminPanel({ students, users, setUsers, setStudents, frase, setFrase })
 
   const [saving, setSaving] = useState(false);
   const [fraseEdit, setFraseEdit] = useState(frase || "");
+  const [verBajas, setVerBajas] = useState(false);
 
   const guardarFrase = async () => {
     const ok = await saveFrase(fraseEdit.trim());
@@ -2232,10 +2287,12 @@ function AdminPanel({ students, users, setUsers, setStudents, frase, setFrase })
             {/* Alta manual */}
             <div className="rounded-2xl p-4 space-y-3" style={{ background: CARD, border: `1px solid rgba(212,175,55,0.2)` }}>
               <p className="text-sm font-semibold text-white">Dar de alta manualmente</p>
-              {[["name","Nombre completo", User], ["username","Usuario", User], ["password","Contraseña temporal", Lock]].map(([f, ph, Icon]) => (
+              {[["name","Nombre completo", User], ["username","Usuario (sin espacios)", User], ["password","Contrase\u00f1a \u00b7 m\u00ednimo 6", Lock]].map(([f, ph, Icon]) => (
                 <div key={f} className="relative">
                   <Icon size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                  <input value={form[f]} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))}
+                  <input value={form[f]} type={f === "password" ? "text" : "text"}
+                    autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                    onChange={e => setForm(p => ({ ...p, [f]: f === "username" ? normalizarUsuario(e.target.value) : e.target.value }))}
                     placeholder={ph} type={f === "password" ? "text" : "text"}
                     className={`w-full pl-9 pr-3 py-2.5 text-sm ${INPUT}`} style={iStyle} />
                 </div>
@@ -2277,8 +2334,13 @@ function AdminPanel({ students, users, setUsers, setStudents, frase, setFrase })
             {/* Inactivos */}
             {inactive.length > 0 && (
               <>
-                <p className="text-xs font-semibold text-gray-600 pt-2">Dados de baja</p>
-                {inactive.map(s => {
+                <button onClick={() => setVerBajas(v => !v)}
+                  className="w-full flex items-center justify-between pt-3 pb-1 text-xs font-semibold transition"
+                  style={{ color: MUTED }}>
+                  <span>Dados de baja · {inactive.length}</span>
+                  <ChevronDown size={14} style={{ transform: verBajas ? "rotate(180deg)" : "none", transition: "transform .2s" }} />
+                </button>
+                {verBajas && inactive.map(s => {
                   const u = users.find(u => u.role === "alumno" && u.studentId === s.id);
                   return (
                     <div key={s.id} className="flex items-center gap-3 rounded-2xl px-4 py-3 opacity-40"

@@ -18,7 +18,29 @@ const silencioso = createClient(URL, KEY, {
 // Los alumnos entran con usuario, no con email. Internamente lo convertimos
 // a un email que nunca se usa para enviar nada.
 const DOMINIO = "proclub.local";
-const aEmail = (usuario) => `${usuario.trim().toLowerCase()}@${DOMINIO}`;
+
+// Deja el usuario en algo que sirva como email: sin espacios, sin
+// mayusculas, sin tildes ni simbolos. "Nico Nievas" -> "niconievas"
+export function normalizarUsuario(texto = "") {
+  return texto
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9._-]/g, "");
+}
+
+const aEmail = (usuario) => `${normalizarUsuario(usuario)}@${DOMINIO}`;
+
+// Supabase responde en ingles; esto lo pasa a algo que el alumno entienda.
+function traducirError(msg = "") {
+  const m = (msg || "").toLowerCase();
+  if (m.includes("already")) return "Ese usuario ya existe. Proba con otro.";
+  if (m.includes("password")) return "La contrasena debe tener al menos 6 caracteres.";
+  if (m.includes("email")) return "El usuario solo puede tener letras y numeros, sin espacios.";
+  if (m.includes("rate") || m.includes("many")) return "Demasiados intentos. Espera un minuto y proba de nuevo.";
+  return "No se pudo completar. Revisa los datos e intenta otra vez.";
+}
 
 const ESTADOS = {
   activo: "active",
@@ -92,6 +114,12 @@ export async function loadAll() {
 
   const yo = perfiles.find((p) => p.id === user.id);
   if (!yo) return null;
+
+  // Si lo dieron de baja mientras tenía la sesión abierta, se cierra acá.
+  if (yo.estado !== "activo") {
+    await supabase.auth.signOut();
+    return null;
+  }
 
   const { data: filas } = await supabase.from("alumnos").select("*");
   const porId = Object.fromEntries((filas || []).map((f) => [f.id, f]));
@@ -204,7 +232,8 @@ export async function saveStudent(alumno) {
 
 // El coach da de alta a un alumno: queda activo de entrada.
 export async function createStudent({ name, username, password }) {
-  const u = username.trim().toLowerCase();
+  const u = normalizarUsuario(username);
+  if (u.length < 3) return { error: "El usuario necesita al menos 3 letras o numeros" };
 
   const { data: existe } = await supabase
     .from("profiles").select("id").eq("username", u).maybeSingle();
@@ -215,11 +244,7 @@ export async function createStudent({ name, username, password }) {
     password,
     options: { data: { nombre: name.trim(), username: u } },
   });
-  if (error) {
-    if (error.message?.toLowerCase().includes("already")) return { error: "Ese usuario ya existe" };
-    if (error.message?.toLowerCase().includes("password")) return { error: "La contraseña debe tener al menos 6 caracteres" };
-    return { error: error.message };
-  }
+  if (error) return { error: traducirError(error.message) };
 
   const id = data.user?.id;
   if (!id) return { error: "No se pudo crear la cuenta" };
@@ -230,17 +255,14 @@ export async function createStudent({ name, username, password }) {
 
 // El alumno se registra solo: queda pendiente hasta que el coach lo apruebe.
 export async function requestMembership({ name, username, password }) {
-  const u = username.trim().toLowerCase();
+  const u = normalizarUsuario(username);
+  if (u.length < 3) return { error: "El usuario necesita al menos 3 letras o números" };
   const { error } = await silencioso.auth.signUp({
     email: aEmail(u),
     password,
     options: { data: { nombre: name.trim(), username: u } },
   });
-  if (error) {
-    if (error.message?.toLowerCase().includes("already")) return { error: "Ese usuario ya existe" };
-    if (error.message?.toLowerCase().includes("password")) return { error: "La contraseña debe tener al menos 6 caracteres" };
-    return { error: error.message };
-  }
+  if (error) return { error: traducirError(error.message) };
   return { ok: true };
 }
 
