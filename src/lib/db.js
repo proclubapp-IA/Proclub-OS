@@ -39,10 +39,11 @@ function perfilAUsuario(p) {
   };
 }
 
-function filaAAlumno(p, fila) {
+function filaAAlumno(p, fila, filaCiclo) {
   const d = (fila && fila.data) || {};
   return {
     id: p.id,
+    ciclo: (filaCiclo && filaCiclo.data) || null,
     name: d.name || p.nombre,
     since: d.since || new Date().toLocaleDateString("es-AR", { month: "short", year: "numeric" }),
     inactive: d.inactive ?? 0,
@@ -95,22 +96,108 @@ export async function loadAll() {
   const { data: filas } = await supabase.from("alumnos").select("*");
   const porId = Object.fromEntries((filas || []).map((f) => [f.id, f]));
 
+  // Solo devuelve filas si RLS lo permite (coach, o la propia alumna)
+  const { data: ciclos } = await supabase.from("ciclo").select("*");
+  const porCiclo = Object.fromEntries((ciclos || []).map((f) => [f.id, f]));
+
   return {
     me: perfilAUsuario(yo),
     users: perfiles.map(perfilAUsuario),
-    students: perfiles.filter((p) => p.rol === "alumno").map((p) => filaAAlumno(p, porId[p.id])),
+    students: perfiles.filter((p) => p.rol === "alumno").map((p) => {
+      const base = filaAAlumno(p, porId[p.id], porCiclo[p.id]);
+      // lo que quedó sin subir en este dispositivo pisa a lo del servidor
+      const local = aplicarCola("alumnos", p.id, null);
+      return local ? { ...base, ...local } : base;
+    }),
   };
 }
 
-/* ─── GUARDADO ───────────────────────────────────────────── */
+/* ─── GUARDADO CON RESPALDO LOCAL ────────────────────────────
+   Si no hay internet o el guardado falla, los datos quedan en el
+   teléfono y se suben solos cuando vuelve la conexión. Nada se
+   pierde aunque la alumna cierre la app.                        */
+
+const COLA = "proclub_pendientes";
+
+function leerCola() {
+  try { return JSON.parse(localStorage.getItem(COLA) || "{}"); }
+  catch (_) { return {}; }
+}
+
+function escribirCola(c) {
+  try { localStorage.setItem(COLA, JSON.stringify(c)); } catch (_) {}
+}
+
+export function hayPendientes() {
+  return Object.keys(leerCola()).length;
+}
+
+/* Estado visible: "ok" | "guardando" | "pendiente" */
+let estado = "ok";
+const oyentes = new Set();
+
+export function onEstadoGuardado(fn) {
+  oyentes.add(fn);
+  fn(estado, hayPendientes());
+  return () => oyentes.delete(fn);
+}
+
+function avisar(nuevo) {
+  estado = nuevo;
+  oyentes.forEach((f) => f(estado, hayPendientes()));
+}
+
+async function subir(tabla, id, data) {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
+  const { error } = await supabase
+    .from(tabla)
+    .upsert({ id, data, updated_at: new Date().toISOString() });
+  if (error) console.warn(`Guardado diferido (${tabla}):`, error.message);
+  return !error;
+}
+
+async function guardar(tabla, id, data) {
+  avisar("guardando");
+  const cola = leerCola();
+  const clave = `${tabla}|${id}`;
+  const ok = await subir(tabla, id, data);
+  if (ok) delete cola[clave];
+  else cola[clave] = { tabla, id, data, ts: Date.now() };
+  escribirCola(cola);
+  avisar(hayPendientes() ? "pendiente" : "ok");
+  return ok;
+}
+
+// Reintenta todo lo que quedó en cola. Se llama al volver la conexión.
+export async function reintentarPendientes() {
+  const cola = leerCola();
+  const claves = Object.keys(cola);
+  if (!claves.length) { avisar("ok"); return; }
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    avisar("pendiente"); return;
+  }
+  avisar("guardando");
+  for (const k of claves) {
+    const { tabla, id, data } = cola[k];
+    if (await subir(tabla, id, data)) {
+      const actual = leerCola();
+      delete actual[k];
+      escribirCola(actual);
+    }
+  }
+  avisar(hayPendientes() ? "pendiente" : "ok");
+}
+
+// Lo que todavía no subió pisa a lo que vino del servidor.
+function aplicarCola(tabla, id, data) {
+  const e = leerCola()[`${tabla}|${id}`];
+  return e ? e.data : data;
+}
 
 export async function saveStudent(alumno) {
-  const { id, ...data } = alumno;
-  const { error } = await supabase
-    .from("alumnos")
-    .upsert({ id, data, updated_at: new Date().toISOString() });
-  if (error) console.error("No se pudo guardar el alumno:", error.message);
-  return !error;
+  // `ciclo` se excluye a propósito: tiene su propia tabla y su propia RLS
+  const { id, ciclo, ...data } = alumno;
+  return guardar("alumnos", id, data);
 }
 
 /* ─── ALTAS Y ESTADOS ────────────────────────────────────── */
@@ -155,6 +242,40 @@ export async function requestMembership({ name, username, password }) {
     return { error: error.message };
   }
   return { ok: true };
+}
+
+/* ─── FRASE DEL PANEL DEL ALUMNO ─────────────────────────── */
+// La escribe el coach, la ven todos los alumnos.
+
+export async function loadFrase() {
+  const { data } = await supabase
+    .from("ajustes").select("valor").eq("clave", "frase").maybeSingle();
+  return data?.valor || "";
+}
+
+export async function saveFrase(texto) {
+  const { error } = await supabase.from("ajustes")
+    .upsert({ clave: "frase", valor: texto, updated_at: new Date().toISOString() });
+  if (error) console.error("No se pudo guardar la frase:", error.message);
+  return !error;
+}
+
+/* ─── CICLO MENSTRUAL ────────────────────────────────────── */
+// Tabla aparte y privada: por RLS, solo la propia alumna lee y
+// escribe su ciclo. El coach NO tiene acceso a estos datos.
+
+export async function loadCiclo() {
+  const { data: sesion } = await supabase.auth.getUser();
+  if (!sesion?.user) return null;
+  const { data } = await supabase
+    .from("ciclo").select("data").eq("id", sesion.user.id).maybeSingle();
+  return aplicarCola("ciclo", sesion.user.id, data?.data || null);
+}
+
+export async function saveCiclo(datos) {
+  const { data: sesion } = await supabase.auth.getUser();
+  if (!sesion?.user) return false;
+  return guardar("ciclo", sesion.user.id, datos);
 }
 
 export async function setEstado(id, estado) {

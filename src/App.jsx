@@ -2,6 +2,8 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   signIn, signOut, loadAll, saveStudent,
   createStudent, requestMembership, setEstado,
+  loadFrase, saveFrase, loadCiclo, saveCiclo,
+  onEstadoGuardado, reintentarPendientes,
 } from "./lib/db";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import {
@@ -1028,7 +1030,248 @@ function ExerciseCard({ ex, exIdx, color, onUpdateWeek, onUpdateSet, onAddSet, o
 
 
 
-function StudentPanel({ student, setStudent }) {
+/* ─── CICLO MENSTRUAL ─────────────────────────────────────────
+   Registro privado de la alumna. No prescribe cargas: muestra
+   el patrón propio para que ella y su coach decidan.          */
+
+const hoyISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
+const diffDias = (a, b) => Math.round((new Date(b+"T00:00:00") - new Date(a+"T00:00:00")) / 86400000);
+const sumarDias = (iso, n) => {
+  const d = new Date(iso+"T00:00:00");
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
+const fechaCorta = iso => new Date(iso+"T00:00:00").toLocaleDateString("es-AR", { day: "numeric", month: "short" });
+
+const ESCALAS = {
+  energia: { label: "Energía",  opciones: [[1,"Baja"],[2,"Normal"],[3,"Alta"]] },
+  dolor:   { label: "Molestias",opciones: [[0,"Ninguna"],[1,"Leves"],[2,"Moderadas"],[3,"Fuertes"]] },
+  sueno:   { label: "Descanso", opciones: [[1,"Mal"],[2,"Normal"],[3,"Bien"]] },
+};
+
+const TRAMOS = [["Días 1 a 5",1,5],["Días 6 a 14",6,14],["Días 15 a 21",15,21],["Día 22 en adelante",22,99]];
+
+function calcularPatrones(datos) {
+  const inicios = [...(datos.inicios || [])].sort();
+  const regs = datos.registros || {};
+  const acc = TRAMOS.map(([label]) => ({ label, energia: [], dolor: [], sueno: [] }));
+  Object.entries(regs).forEach(([fecha, r]) => {
+    const previo = inicios.filter(i => i <= fecha).pop();
+    if (!previo) return;
+    const dia = diffDias(previo, fecha) + 1;
+    const idx = TRAMOS.findIndex(([, a, b]) => dia >= a && dia <= b);
+    if (idx < 0) return;
+    if (r.energia != null) acc[idx].energia.push(r.energia);
+    if (r.dolor   != null) acc[idx].dolor.push(r.dolor);
+    if (r.sueno   != null) acc[idx].sueno.push(r.sueno);
+  });
+  return acc;
+}
+
+const promedio = arr => arr.length ? arr.reduce((a,b)=>a+b,0) / arr.length : null;
+
+function textoEscala(campo, valor) {
+  if (valor == null) return "—";
+  const op = ESCALAS[campo].opciones;
+  const cercano = op.reduce((best, o) => Math.abs(o[0]-valor) < Math.abs(best[0]-valor) ? o : best, op[0]);
+  return cercano[1];
+}
+
+function CicloView() {
+  const [datos, setDatos]   = useState(null);
+  const [cargando, setCarg] = useState(true);
+  const [dur, setDur]       = useState("28");
+  const [inicio, setInicio] = useState(hoyISO());
+  const [toast, setToast]   = useState("");
+
+  const avisar = m => { setToast(m); setTimeout(() => setToast(""), 2200); };
+
+  useEffect(() => {
+    (async () => { setDatos(await loadCiclo()); setCarg(false); })();
+  }, []);
+
+  const guardar = async (nuevo) => {
+    setDatos(nuevo);
+    await saveCiclo(nuevo);
+  };
+
+  const activar = () => {
+    const d = parseInt(dur, 10);
+    if (!d || d < 20 || d > 45) { avisar("Poné una duración entre 20 y 45 días"); return; }
+    guardar({ activo: true, duracion: d, inicios: [inicio], registros: {} });
+  };
+
+  const registrarInicio = (fecha) => {
+    const inicios = [...new Set([...(datos.inicios || []), fecha])].sort();
+    guardar({ ...datos, inicios });
+    avisar("Inicio registrado");
+  };
+
+  const marcar = (campo, valor) => {
+    const f = hoyISO();
+    const prev = (datos.registros || {})[f] || {};
+    guardar({ ...datos, registros: { ...(datos.registros || {}), [f]: { ...prev, [campo]: valor } } });
+  };
+
+  if (cargando) return <p className="text-center text-xs py-8" style={{ color: MUTED }}>Cargando…</p>;
+
+  /* ── Pantalla de activación ───────────────────────────── */
+  if (!datos || !datos.activo) return (
+    <div className="rounded-2xl p-5 space-y-4" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+      <div>
+        <h3 className="text-base font-bold" style={{ color: TEXT }}>Seguimiento de ciclo</h3>
+        <p className="text-xs mt-2 leading-relaxed" style={{ color: MUTED }}>
+          Registrá cuándo empieza tu período y cómo te sentís cada día. Después de dos o tres
+          ciclos la app te muestra tu propio patrón de energía, molestias y descanso.
+        </p>
+      </div>
+
+      <div className="rounded-xl p-3 space-y-2" style={{ background: CARD2 }}>
+        <p className="text-[11px] font-semibold" style={{ color: TEXT }}>Qué NO hace</p>
+        <p className="text-[11px] leading-relaxed" style={{ color: MUTED }}>
+          No te va a decir que bajes las cargas por estar en determinada fase. La evidencia actual
+          no respalda ajustar el entrenamiento según el ciclo, y creer que vas a rendir menos
+          suele hacer que rindas menos. Esto es información tuya, no una indicación.
+        </p>
+      </div>
+
+      <div className="rounded-xl p-3" style={{ background: GOLD_S, border: `1px solid rgba(200,168,75,0.35)` }}>
+        <p className="text-[11px] font-semibold mb-1" style={{ color: TEXT }}>Tu coach ve esta información</p>
+        <p className="text-[11px] leading-relaxed" style={{ color: MUTED }}>
+          Al activar el seguimiento, tu coach puede ver en qué día del ciclo estás y lo que
+          registres cada día. Le sirve para acompañarte mejor. Si preferís no compartirlo,
+          no actives esta sección: el resto de la app funciona igual.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <label className="text-[11px] block" style={{ color: MUTED }}>¿Cuándo empezó tu último período?</label>
+        <input type="date" value={inicio} max={hoyISO()} onChange={e => setInicio(e.target.value)}
+          className={`w-full px-3 py-2.5 text-sm ${INPUT}`} style={iStyle} />
+        <label className="text-[11px] block pt-1" style={{ color: MUTED }}>Duración promedio de tu ciclo (días)</label>
+        <input type="number" value={dur} onChange={e => setDur(e.target.value)}
+          className={`w-full px-3 py-2.5 text-sm ${INPUT}`} style={iStyle} />
+      </div>
+
+      {toast && <p className="text-xs text-center" style={{ color: RED }}>{toast}</p>}
+
+      <button onClick={activar}
+        className="w-full py-2.5 rounded-xl text-sm font-bold transition-all active:scale-[.98]"
+        style={{ background: LIME, color: "#0a1a00" }}>
+        Activar seguimiento
+      </button>
+    </div>
+  );
+
+  /* ── Panel activo ─────────────────────────────────────── */
+  const inicios = [...(datos.inicios || [])].sort();
+  const ultimo  = inicios[inicios.length - 1];
+  const dias    = inicios.length > 1
+    ? Math.round(promedio(inicios.slice(1).map((f, i) => diffDias(inicios[i], f))))
+    : datos.duracion;
+  const diaActual = ultimo ? diffDias(ultimo, hoyISO()) + 1 : null;
+  const proximo   = ultimo ? sumarDias(ultimo, dias) : null;
+  const faltan    = proximo ? diffDias(hoyISO(), proximo) : null;
+  const hoyReg    = (datos.registros || {})[hoyISO()] || {};
+  const totalRegs = Object.keys(datos.registros || {}).length;
+  const pats      = calcularPatrones(datos);
+
+  return (
+    <div className="space-y-3">
+      <Toast msg={toast} onClose={() => setToast("")} />
+
+      {/* Estado actual */}
+      <div className="rounded-2xl p-5" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+        <p className="text-[10px] uppercase tracking-widest" style={{ color: MUTED }}>Tu ciclo hoy</p>
+        <p className="text-3xl font-bold mt-1" style={{ color: TEXT }}>Día {diaActual}</p>
+        <p className="text-xs mt-2" style={{ color: MUTED }}>
+          {faltan > 1  && `Próximo período estimado: ${fechaCorta(proximo)} · en ${faltan} días`}
+          {faltan === 1 && `Próximo período estimado: mañana`}
+          {faltan === 0 && `Próximo período estimado: hoy`}
+          {faltan < 0   && `Estimado hace ${Math.abs(faltan)} días · los ciclos varían, es normal`}
+        </p>
+        <p className="text-[10px] mt-1" style={{ color: MUTED }}>
+          Ciclo promedio: {dias} días {inicios.length > 1 ? `(sobre ${inicios.length} registros)` : "(estimado)"}
+        </p>
+        <p className="text-[10px] mt-2 pt-2" style={{ color: MUTED, borderTop: `1px solid ${BORDER}` }}>
+          Tu coach ve esta información.
+        </p>
+      </div>
+
+      {/* Registrar inicio */}
+      <div className="rounded-2xl p-4 space-y-2" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+        <p className="text-xs font-semibold" style={{ color: TEXT }}>¿Empezó tu período?</p>
+        <div className="flex gap-2">
+          <button onClick={() => registrarInicio(hoyISO())}
+            className="flex-1 py-2 rounded-xl text-xs font-bold transition-all active:scale-95"
+            style={{ background: LIME, color: "#0a1a00" }}>
+            Empezó hoy
+          </button>
+          <input type="date" max={hoyISO()} onChange={e => e.target.value && registrarInicio(e.target.value)}
+            className={`flex-1 px-3 py-2 text-xs ${INPUT}`} style={iStyle} />
+        </div>
+      </div>
+
+      {/* Cómo te sentís hoy */}
+      <div className="rounded-2xl p-4 space-y-3" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+        <p className="text-xs font-semibold" style={{ color: TEXT }}>Cómo te sentís hoy</p>
+        {Object.entries(ESCALAS).map(([campo, { label, opciones }]) => (
+          <div key={campo}>
+            <p className="text-[10px] mb-1.5" style={{ color: MUTED }}>{label}</p>
+            <div className="flex gap-1.5">
+              {opciones.map(([val, txt]) => {
+                const sel = hoyReg[campo] === val;
+                return (
+                  <button key={val} onClick={() => marcar(campo, val)}
+                    className="flex-1 py-2 rounded-lg text-[11px] font-semibold transition-all active:scale-95"
+                    style={sel
+                      ? { background: LIME_S, color: LIME, border: `1px solid ${LIME}` }
+                      : { background: CARD2, color: MUTED, border: `1px solid ${BORDER}` }}>
+                    {txt}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Patrón propio */}
+      <div className="rounded-2xl p-4" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+        <p className="text-xs font-semibold mb-3" style={{ color: TEXT }}>Tu patrón</p>
+        {totalRegs < 10 ? (
+          <p className="text-[11px] leading-relaxed" style={{ color: MUTED }}>
+            Llevás {totalRegs} {totalRegs === 1 ? "día registrado" : "días registrados"}. A partir de
+            10 vas a poder ver cómo varían tu energía y tus molestias a lo largo del ciclo.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {pats.map(t => {
+              const n = t.energia.length + t.dolor.length + t.sueno.length;
+              if (!n) return null;
+              return (
+                <div key={t.label} className="flex items-center justify-between py-2 border-b last:border-0" style={{ borderColor: BORDER }}>
+                  <span className="text-[11px]" style={{ color: TEXT }}>{t.label}</span>
+                  <span className="text-[10px] text-right" style={{ color: MUTED }}>
+                    Energía {textoEscala("energia", promedio(t.energia))} · Molestias {textoEscala("dolor", promedio(t.dolor))}
+                  </span>
+                </div>
+              );
+            })}
+            <p className="text-[10px] pt-2 leading-relaxed" style={{ color: MUTED }}>
+              Es tu patrón personal, no una regla. Varía entre ciclos y entre personas.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StudentPanel({ student, setStudent, frase }) {
   const [view, setView]         = useState("train");
   const [toast, setToast]       = useState("");
   const [newEx, setNewEx]       = useState("");
@@ -1145,9 +1388,10 @@ function StudentPanel({ student, setStudent }) {
       {/* Header */}
       <div className="px-4 pt-10 pb-2">
         <div className="flex items-center justify-between mb-5">
-          <div>
-            <p className="text-xs text-gray-500 uppercase tracking-widest">Bienvenido</p>
-            <h1 className="text-2xl font-bold text-white mt-0.5">{student.name.split(" ")[0]}</h1>
+          <div className="flex-1 min-w-0 pr-3">
+            <p className="text-xs text-gray-500 uppercase tracking-widest">Hola</p>
+            <h1 className="text-2xl font-bold text-white mt-0.5 truncate">{student.name.split(" ")[0]}</h1>
+            {frase && <p className="text-xs mt-1.5 leading-snug" style={{ color: "#b4afc0" }}>{frase}</p>}
           </div>
           <div className="relative">
             <ProgressRing pct={pct} size={60} />
@@ -1191,9 +1435,9 @@ function StudentPanel({ student, setStudent }) {
 
         {/* View toggle */}
         <div className="flex gap-1 p-1 rounded-xl" style={{ background: CARD2 }}>
-          {[["train", <Dumbbell size={13} />, "Entrenar"], ["progress", <BarChart3 size={13} />, "Mi progreso"]].map(([v, icon, label]) => (
+          {[["train", <Dumbbell size={13} />, "Entrenar"], ["progress", <BarChart3 size={13} />, "Progreso"], ["ciclo", <Calendar size={13} />, "Ciclo"]].map(([v, icon, label]) => (
             <button key={v} onClick={() => setView(v)}
-              className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all duration-200"
+              className="flex-1 flex items-center justify-center gap-1 py-2 rounded-lg text-[11px] font-semibold transition-all duration-200"
               style={view === v ? { background: GOLD, color: "#1a1300" } : { color: MUTED }}>
               {icon} {label}
             </button>
@@ -1202,7 +1446,9 @@ function StudentPanel({ student, setStudent }) {
       </div>
 
       <div className="px-4 pb-24 space-y-3">
-        {view === "train" ? (
+        {view === "ciclo" ? (
+          <CicloView />
+        ) : view === "train" ? (
           <>
             {/* ── Buscador ──────────────────────────────────────── */}
             <div className="flex gap-2">
@@ -1470,7 +1716,7 @@ function StudentPanel({ student, setStudent }) {
 }
 
 /* ─── ADMIN VIEW ─────────────────────────────────────────── */
-function AdminPanel({ students, users, setUsers, setStudents }) {
+function AdminPanel({ students, users, setUsers, setStudents, frase, setFrase }) {
   const [view, setView]       = useState("members"); // "members" | "manage"
   const [selected, setSelected] = useState(null);
   const [query, setQuery]     = useState("");
@@ -1527,6 +1773,13 @@ function AdminPanel({ students, users, setUsers, setStudents }) {
   };
 
   const [saving, setSaving] = useState(false);
+  const [fraseEdit, setFraseEdit] = useState(frase || "");
+
+  const guardarFrase = async () => {
+    const ok = await saveFrase(fraseEdit.trim());
+    setFrase(fraseEdit.trim());
+    showToast(ok ? "✓ Frase actualizada" : "No se pudo guardar");
+  };
 
   const addMember = async () => {
     setFormErr("");
@@ -1603,6 +1856,46 @@ function AdminPanel({ students, users, setUsers, setStudents }) {
               ))}
             </div>
           )}
+
+          {/* Ciclo */}
+          {s.ciclo?.activo && (() => {
+            const ini = [...(s.ciclo.inicios || [])].sort();
+            const ult = ini[ini.length - 1];
+            if (!ult) return null;
+            const dur = ini.length > 1
+              ? Math.round(promedio(ini.slice(1).map((f, i) => diffDias(ini[i], f))))
+              : s.ciclo.duracion;
+            const dia  = diffDias(ult, hoyISO()) + 1;
+            const prox = sumarDias(ult, dur);
+            const regs = Object.entries(s.ciclo.registros || {}).sort().slice(-5).reverse();
+            return (
+              <div className="rounded-2xl p-4 mb-4" style={{ background: CARD, border: "1px solid #242424" }}>
+                <div className="flex items-baseline justify-between mb-2">
+                  <p className="text-xs font-semibold text-gray-400">Ciclo</p>
+                  <p className="text-[10px]" style={{ color: MUTED }}>promedio {dur} días</p>
+                </div>
+                <p className="text-lg font-bold" style={{ color: TEXT }}>Día {dia}</p>
+                <p className="text-[11px] mb-3" style={{ color: MUTED }}>
+                  Próximo período estimado: {fechaCorta(prox)}
+                </p>
+                {regs.length > 0 && (
+                  <div className="space-y-1 pt-2" style={{ borderTop: `1px solid ${BORDER}` }}>
+                    {regs.map(([f, r]) => (
+                      <div key={f} className="flex items-center justify-between">
+                        <span className="text-[10px]" style={{ color: MUTED }}>{fechaCorta(f)}</span>
+                        <span className="text-[10px]" style={{ color: TEXT }}>
+                          Energía {textoEscala("energia", r.energia)} · Molestias {textoEscala("dolor", r.dolor)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[10px] mt-3 leading-relaxed" style={{ color: MUTED }}>
+                  Contexto para conversar con ella, no para bajarle las cargas por fase.
+                </p>
+              </div>
+            );
+          })()}
 
           {/* Gráfico */}
           <div className="rounded-2xl p-4" style={{ background: CARD, border: "1px solid #242424" }}>
@@ -1812,6 +2105,25 @@ function AdminPanel({ students, users, setUsers, setStudents }) {
               </div>
             )}
 
+            {/* Frase del panel del alumno */}
+            <div className="rounded-2xl p-4 space-y-2" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+              <p className="text-sm font-semibold text-white">Frase para tus alumnos</p>
+              <p className="text-[11px]" style={{ color: MUTED }}>
+                Aparece bajo el saludo, al abrir la app. La ven todos.
+              </p>
+              <textarea value={fraseEdit} onChange={e => setFraseEdit(e.target.value)} rows={2}
+                maxLength={140} placeholder="La disciplina vence al talento"
+                className={`w-full px-3 py-2.5 text-sm resize-none ${INPUT}`} style={iStyle} />
+              <div className="flex items-center justify-between">
+                <span className="text-[10px]" style={{ color: MUTED }}>{fraseEdit.length}/140</span>
+                <button onClick={guardarFrase}
+                  className="px-4 py-2 rounded-xl text-xs font-bold transition-all active:scale-95"
+                  style={{ background: GOLD, color: "#1a1300" }}>
+                  Guardar frase
+                </button>
+              </div>
+            </div>
+
             {/* Alta manual */}
             <div className="rounded-2xl p-4 space-y-3" style={{ background: CARD, border: `1px solid rgba(212,175,55,0.2)` }}>
               <p className="text-sm font-semibold text-white">Dar de alta manualmente</p>
@@ -1889,7 +2201,20 @@ function AdminPanel({ students, users, setUsers, setStudents }) {
 }
 
 /* ─── HEADER GLOBAL ─────────────────────────────────────── */
-function Header({ name, role, onLogout }) {
+function EstadoGuardado({ estado, pendientes }) {
+  if (estado === "ok" && !pendientes) return null;
+  const txt = estado === "guardando" ? "Guardando…"
+    : `Sin conexión · ${pendientes} ${pendientes === 1 ? "cambio" : "cambios"} por subir`;
+  const color = estado === "guardando" ? MUTED : GOLD;
+  return (
+    <span className="flex items-center gap-1.5 text-[10px] font-semibold" style={{ color }}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />
+      {txt}
+    </span>
+  );
+}
+
+function Header({ name, role, onLogout, estado, pendientes }) {
   return (
     <div className="sticky top-0 z-40 backdrop-blur-md border-b" style={{ background: "rgba(12,11,9,0.85)", borderColor: BORDER }}>
       <div className="h-px w-full" style={{ background: "linear-gradient(90deg, transparent, rgba(212,175,55,0.4), transparent)" }} />
@@ -1899,6 +2224,7 @@ function Header({ name, role, onLogout }) {
           <span className="text-xs font-bold tracking-[0.1em] text-white">ProClub OS</span>
         </div>
         <div className="flex items-center gap-3">
+          <EstadoGuardado estado={estado} pendientes={pendientes} />
           <span className="text-[11px] text-gray-500 hidden sm:block">{name}</span>
           <button onClick={onLogout} className="text-gray-600 hover:text-gray-300 transition"><LogOut size={15} /></button>
         </div>
@@ -1912,7 +2238,9 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [students, setStudents] = useState([]);
   const [me, setMe] = useState(null);
+  const [frase, setFrase] = useState("");
   const [loading, setLoading] = useState(true);
+  const [sync, setSync] = useState({ estado: "ok", pendientes: 0 });
   const guardado = useRef({});
 
   // Carga inicial: si hay sesión abierta, trae perfiles y alumnos desde Supabase
@@ -1925,6 +2253,7 @@ export default function App() {
       return;
     }
     guardado.current = Object.fromEntries(datos.students.map(s => [s.id, s]));
+    setFrase(await loadFrase());
     setUsers(datos.users);
     setStudents(datos.students);
     setMe(datos.me);
@@ -1932,6 +2261,24 @@ export default function App() {
   };
 
   useEffect(() => { bootstrap(); }, []);
+
+  // Indicador de guardado + reintento al volver la conexión
+  useEffect(() => {
+    const baja = onEstadoGuardado((estado, pendientes) => setSync({ estado, pendientes }));
+    const volvio = () => reintentarPendientes();
+    window.addEventListener("online", volvio);
+    const timer = setInterval(() => { if (navigator.onLine) reintentarPendientes(); }, 20000);
+    reintentarPendientes();
+    return () => { baja(); window.removeEventListener("online", volvio); clearInterval(timer); };
+  }, []);
+
+  // Avisar si se cierra la app con cambios sin subir
+  useEffect(() => {
+    if (!sync.pendientes) return;
+    const avisar = e => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", avisar);
+    return () => window.removeEventListener("beforeunload", avisar);
+  }, [sync.pendientes]);
 
   // Autoguardado: sube solo los alumnos cuyos datos cambiaron
   useEffect(() => {
@@ -1975,11 +2322,12 @@ export default function App() {
         input[type=date]::-webkit-calendar-picker-indicator { filter:invert(1); opacity:0.5; }
         * { box-sizing: border-box; }
       `}</style>
-      <Header name={displayName} role={me.role} onLogout={handleLogout} />
+      <Header name={displayName} role={me.role} onLogout={handleLogout}
+        estado={sync.estado} pendientes={sync.pendientes} />
       <div className="max-w-2xl mx-auto">
         {me.role === "admin"
-          ? <AdminPanel students={students} users={users} setUsers={setUsers} setStudents={setStudents} />
-          : myStudent && <StudentPanel student={myStudent} setStudent={setSelf} />}
+          ? <AdminPanel students={students} users={users} setUsers={setUsers} setStudents={setStudents} frase={frase} setFrase={setFrase} />
+          : myStudent && <StudentPanel student={myStudent} setStudent={setSelf} frase={frase} />}
       </div>
     </div>
   );
