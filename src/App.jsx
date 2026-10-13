@@ -10,6 +10,7 @@ import {
   Crown, Search, Dumbbell, TrendingUp, LogOut, Plus, Trash2,
   LogIn, Lock, User, ChevronDown, Check, X, UserX, UserCheck,
   UserPlus, ShieldCheck, BarChart3, Clock, Calendar, FileText,
+  HelpCircle, ArrowRight,
 } from "lucide-react";
 
 /* ─── TOKENS ─────────────────────────────────────────────── */
@@ -1271,6 +1272,90 @@ function CicloView() {
   );
 }
 
+/* ─── CÓMO SE USA ─────────────────────────────────────────────
+   Aparece solo la primera vez. Después queda en el signo de
+   pregunta, arriba a la derecha.                               */
+
+const PASOS = [
+  {
+    titulo: "Esto es tu registro de cargas",
+    texto: "Acá anotás lo que levantás en cada entrenamiento. Semana a semana vas viendo si estás progresando, con números en vez de a ojo.",
+  },
+  {
+    titulo: "Armá tu lista de ejercicios",
+    texto: "Agregá los ejercicios que hacés. Cada uno guarda 5 semanas, y en cada semana cargás tus series: repeticiones y kilos. Podés agruparlos por bloque y destacar los importantes.",
+  },
+  {
+    titulo: "No hace falta guardar",
+    texto: "Lo que escribís se guarda solo. Si te quedás sin señal en el gimnasio, igual podés cargar: queda en el teléfono y se sube cuando vuelve internet. Arriba te avisa si quedó algo pendiente.",
+  },
+  {
+    titulo: "Enviar la semana es opcional",
+    texto: "Cuando querés que el coach revise una semana, tocá «Enviar esta semana al coach». Ahí queda bloqueada hasta que él la apruebe o te la devuelva para corregir. Si no la enviás, igual se guarda todo.",
+  },
+  {
+    titulo: "Llevate tu resumen",
+    texto: "En Progreso podés exportar un PDF con tus números y tu evolución. Sirve para cerrar el mes y repasarlo con el coach.",
+  },
+];
+
+function ComoSeUsa({ onClose }) {
+  const [i, setI] = useState(0);
+  const ultimo = i === PASOS.length - 1;
+  const paso = PASOS[i];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.75)" }}>
+      <div className="w-full max-w-md rounded-3xl p-6 space-y-5"
+        style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] uppercase tracking-widest" style={{ color: MUTED }}>
+            Cómo se usa · {i + 1} de {PASOS.length}
+          </span>
+          <button onClick={onClose} className="text-gray-600 hover:text-gray-300 transition">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="min-h-[150px]">
+          <h2 className="text-xl font-bold leading-tight" style={{ color: TEXT }}>{paso.titulo}</h2>
+          <p className="text-sm mt-3 leading-relaxed" style={{ color: MUTED }}>{paso.texto}</p>
+        </div>
+
+        <div className="flex items-center justify-center gap-1.5">
+          {PASOS.map((_, n) => (
+            <span key={n} className="h-1.5 rounded-full transition-all"
+              style={{ width: n === i ? 18 : 6, background: n === i ? GOLD : BORDER }} />
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2">
+          {i > 0 && (
+            <button onClick={() => setI(i - 1)}
+              className="px-4 py-3 rounded-xl text-sm font-semibold transition-all active:scale-95"
+              style={{ background: CARD2, color: MUTED }}>
+              Atrás
+            </button>
+          )}
+          <button onClick={() => (ultimo ? onClose() : setI(i + 1))}
+            className="flex-1 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all active:scale-[.98]"
+            style={{ background: GOLD, color: "#1a1300" }}>
+            {ultimo ? "Empezar" : <>Siguiente <ArrowRight size={15} /></>}
+          </button>
+        </div>
+
+        {!ultimo && (
+          <button onClick={onClose} className="w-full text-[11px] transition" style={{ color: MUTED }}>
+            Saltar
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function StudentPanel({ student, setStudent, frase }) {
   const [view, setView]         = useState("train");
   const [toast, setToast]       = useState("");
@@ -1282,6 +1367,20 @@ function StudentPanel({ student, setStudent, frase }) {
   const [selectedMonth, setSelectedMonth] = useState(null);
   const [reportHtml, setReportHtml]   = useState(null);
   const [generatingPDF, setGeneratingPDF] = useState(false);
+  const [guia, setGuia] = useState(false);
+
+  // Se muestra sola la primera vez en este dispositivo
+  useEffect(() => {
+    const clave = `proclub_guia_${student.id}`;
+    try {
+      if (!localStorage.getItem(clave)) setGuia(true);
+    } catch (_) { /* navegador sin almacenamiento: no pasa nada */ }
+  }, [student.id]);
+
+  const cerrarGuia = () => {
+    setGuia(false);
+    try { localStorage.setItem(`proclub_guia_${student.id}`, "1"); } catch (_) {}
+  };
   const showToast = msg => { setToast(msg); setTimeout(() => setToast(""), 2500); };
 
   // Bloques del alumno
@@ -1384,6 +1483,7 @@ function StudentPanel({ student, setStudent, frase }) {
   return (
     <>
       {reportHtml && <ReportOverlay html={reportHtml} onClose={() => setReportHtml(null)} />}
+      {guia && <ComoSeUsa onClose={cerrarGuia} />}
       <div className="min-h-screen" style={{ background: BG }}>
       {/* Header */}
       <div className="px-4 pt-10 pb-2">
@@ -1393,6 +1493,11 @@ function StudentPanel({ student, setStudent, frase }) {
             <h1 className="text-2xl font-bold text-white mt-0.5 truncate">{student.name.split(" ")[0]}</h1>
             {frase && <p className="text-xs mt-1.5 leading-snug" style={{ color: "#b4afc0" }}>{frase}</p>}
           </div>
+          <button onClick={() => setGuia(true)}
+            className="shrink-0 mr-2 self-start mt-1 text-gray-600 hover:text-gray-300 transition"
+            title="Cómo se usa">
+            <HelpCircle size={18} />
+          </button>
           <div className="relative">
             <ProgressRing pct={pct} size={60} />
             <div className="absolute inset-0 flex flex-col items-center justify-center">
