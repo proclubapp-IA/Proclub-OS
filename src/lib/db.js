@@ -301,6 +301,23 @@ export async function saveCiclo(datos) {
   return guardar("ciclo", sesion.user.id, datos);
 }
 
+/* ─── RESTABLECER CONTRASEÑA ─────────────────────────────── */
+// Llama a la función que vive en Supabase. La verificación de que
+// sos el coach se hace allá, no acá: en el navegador no se puede
+// confiar en nada.
+
+export async function resetPassword(alumnoId, password) {
+  const { data, error } = await supabase.functions.invoke("reset-password", {
+    body: { alumnoId, password },
+  });
+  if (error) {
+    const detalle = await error.context?.json?.().catch(() => null);
+    return { error: detalle?.error || "No se pudo cambiar la contraseña" };
+  }
+  if (data?.error) return { error: data.error };
+  return { ok: true };
+}
+
 export async function setEstado(id, estado) {
   const { error } = await supabase.from("profiles").update({ estado }).eq("id", id);
   if (error) console.error("No se pudo cambiar el estado:", error.message);
