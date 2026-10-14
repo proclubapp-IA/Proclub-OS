@@ -3,7 +3,7 @@ import {
   signIn, signOut, loadAll, saveStudent,
   createStudent, requestMembership, setEstado,
   loadFrase, saveFrase, loadCiclo, saveCiclo,
-  onEstadoGuardado, reintentarPendientes, normalizarUsuario,
+  onEstadoGuardado, reintentarPendientes, normalizarUsuario, resetPassword,
 } from "./lib/db";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import {
@@ -30,7 +30,7 @@ const BORDER = "#2e2b3a";                  // borde con tono cálido
 const TEXT   = "#edeaf2";                  // blanco cálido, no #fff puro
 const MUTED  = "#7a7585";                  // gris con tono cálido
 const BG     = "linear-gradient(160deg, #1a1825 0%, #141218 40%, #0f0e14 100%)";
-const MAX_EX = 10;
+const MAX_EX = 100;  // tope por alumno. Subilo acá si alguna vez hace falta.
 
 // Helper global: reemplaza el inline style de inputs
 const inputBg = "#17151e";
@@ -1076,6 +1076,166 @@ function ExerciseCard({ ex, exIdx, color, onUpdateWeek, onUpdateSet, onAddSet, o
 
 
 
+/* ─── FICHA DEL ALUMNO ────────────────────────────────────────
+   La completa el alumno. El coach la ve en su panel.          */
+
+const EXPERIENCIA = [
+  "Menos de 6 meses",
+  "Entre 6 meses y 1 año",
+  "Entre 1 y 2 años",
+  "Entre 2 y 3 años",
+  "Más de 3 años",
+];
+
+const OBJETIVOS = [
+  "Ganar masa muscular",
+  "Bajar grasa",
+  "Ganar fuerza",
+  "Salud y movilidad",
+  "Competir",
+];
+
+const SUPLEMENTOS = [
+  "Sí, actualmente",
+  "Tomé antes, hoy no",
+  "Nunca, pero me interesa",
+  "No y no me interesa",
+];
+
+const NUTRICION = [
+  "Sí, me interesa",
+  "Ya tengo nutricionista",
+  "Por ahora no",
+];
+
+const SEXO = ["Femenino", "Masculino", "Prefiero no decirlo"];
+
+function calcularEdad(nacimiento) {
+  if (!nacimiento) return null;
+  const n = new Date(nacimiento + "T00:00:00");
+  const hoy = new Date();
+  let e = hoy.getFullYear() - n.getFullYear();
+  const m = hoy.getMonth() - n.getMonth();
+  if (m < 0 || (m === 0 && hoy.getDate() < n.getDate())) e--;
+  return e >= 0 && e < 120 ? e : null;
+}
+
+const CAMPOS_FICHA = ["nombre", "nacimiento", "sexo", "celular", "objetivo", "experiencia"];
+const fichaCompleta = p => CAMPOS_FICHA.every(c => p?.[c]);
+
+function Opciones({ label, valor, opciones, onChange }) {
+  return (
+    <div>
+      <p className="text-[11px] mb-1.5" style={{ color: MUTED }}>{label}</p>
+      <div className="flex flex-wrap gap-1.5">
+        {opciones.map(o => {
+          const sel = valor === o;
+          return (
+            <button key={o} onClick={() => onChange(sel ? "" : o)}
+              className="px-3 py-2 rounded-lg text-[11px] font-semibold transition-all active:scale-95"
+              style={sel
+                ? { background: LIME_S, color: LIME, border: `1px solid ${LIME}` }
+                : { background: CARD2, color: MUTED, border: `1px solid ${BORDER}` }}>
+              {o}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FichaAlumno({ student, setStudent, onClose }) {
+  const p = student.perfil || {};
+  const set = (campo, valor) => setStudent(s => ({ ...s, perfil: { ...(s.perfil || {}), [campo]: valor } }));
+  const edad = calcularEdad(p.nacimiento);
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto" style={{ background: BG }}>
+      <div className="max-w-2xl mx-auto px-4 py-6 space-y-4">
+
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold" style={{ color: TEXT }}>Mi ficha</h2>
+          <button onClick={onClose} className="p-2 text-gray-500 hover:text-gray-300 transition">
+            <X size={20} />
+          </button>
+        </div>
+        <p className="text-xs leading-relaxed" style={{ color: MUTED }}>
+          Tu coach usa estos datos para armarte el entrenamiento. Se guardan solos a medida
+          que los completás.
+        </p>
+
+        {/* Datos personales */}
+        <div className="rounded-2xl p-4 space-y-3" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+          <p className="text-xs font-semibold" style={{ color: TEXT }}>Datos personales</p>
+
+          <div>
+            <p className="text-[11px] mb-1.5" style={{ color: MUTED }}>Nombre y apellido</p>
+            <input value={p.nombre ?? student.name ?? ""} onChange={e => set("nombre", e.target.value)}
+              className={`w-full px-3 py-2.5 text-sm ${INPUT}`} style={iStyle} />
+          </div>
+
+          <div>
+            <p className="text-[11px] mb-1.5" style={{ color: MUTED }}>
+              Fecha de nacimiento {edad != null && <span style={{ color: TEXT }}>· {edad} años</span>}
+            </p>
+            <input type="date" value={p.nacimiento || ""} max={hoyISO()}
+              onChange={e => set("nacimiento", e.target.value)}
+              className={`w-full px-3 py-2.5 text-sm ${INPUT}`} style={iStyle} />
+          </div>
+
+          <div>
+            <p className="text-[11px] mb-1.5" style={{ color: MUTED }}>Celular</p>
+            <input type="tel" inputMode="tel" value={p.celular || ""} placeholder="266 123 4567"
+              onChange={e => set("celular", e.target.value)}
+              className={`w-full px-3 py-2.5 text-sm ${INPUT}`} style={iStyle} />
+          </div>
+
+          <Opciones label="Sexo" valor={p.sexo} opciones={SEXO} onChange={v => set("sexo", v)} />
+        </div>
+
+        {/* Entrenamiento */}
+        <div className="rounded-2xl p-4 space-y-4" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+          <p className="text-xs font-semibold" style={{ color: TEXT }}>Entrenamiento</p>
+          <Opciones label="Tu objetivo principal" valor={p.objetivo} opciones={OBJETIVOS}
+            onChange={v => set("objetivo", v)} />
+          <Opciones label="Hace cuánto entrenás" valor={p.experiencia} opciones={EXPERIENCIA}
+            onChange={v => set("experiencia", v)} />
+        </div>
+
+        {/* Salud */}
+        <div className="rounded-2xl p-4 space-y-3" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+          <p className="text-xs font-semibold" style={{ color: TEXT }}>Lesiones y molestias</p>
+          <p className="text-[11px] leading-relaxed" style={{ color: MUTED }}>
+            Contá cualquier lesión, cirugía o dolor que tengas o hayas tenido, aunque te
+            parezca viejo. Es lo que más cambia cómo te arman la rutina.
+          </p>
+          <textarea value={p.lesiones || ""} rows={4}
+            placeholder="Ej: me operé el hombro derecho en 2023, todavía me molesta en press por encima de la cabeza"
+            onChange={e => set("lesiones", e.target.value)}
+            className={`w-full px-3 py-2.5 text-sm resize-none ${INPUT}`} style={iStyle} />
+        </div>
+
+        {/* Nutrición */}
+        <div className="rounded-2xl p-4 space-y-4" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+          <p className="text-xs font-semibold" style={{ color: TEXT }}>Nutrición</p>
+          <Opciones label="¿Tomás suplementos?" valor={p.suplementos} opciones={SUPLEMENTOS}
+            onChange={v => set("suplementos", v)} />
+          <Opciones label="¿Te interesa el acompañamiento de un nutricionista?" valor={p.nutricion}
+            opciones={NUTRICION} onChange={v => set("nutricion", v)} />
+        </div>
+
+        <button onClick={onClose}
+          className="w-full py-3 rounded-xl text-sm font-bold transition-all active:scale-[.98]"
+          style={{ background: GOLD, color: "#1a1300" }}>
+          Listo
+        </button>
+        <div className="h-4" />
+      </div>
+    </div>
+  );
+}
+
 /* ─── CICLO MENSTRUAL ─────────────────────────────────────────
    Registro privado de la alumna. No prescribe cargas: muestra
    el patrón propio para que ella y su coach decidan.          */
@@ -1132,6 +1292,8 @@ function CicloView() {
   const [dur, setDur]       = useState("28");
   const [inicio, setInicio] = useState(hoyISO());
   const [toast, setToast]   = useState("");
+  const [dia, setDia]       = useState(hoyISO());   // día que se está registrando
+  const [ajustes, setAjustes] = useState(false);
 
   const avisar = m => { setToast(m); setTimeout(() => setToast(""), 2200); };
 
@@ -1156,10 +1318,32 @@ function CicloView() {
     avisar("Inicio registrado");
   };
 
+  // Si toca la opción que ya estaba marcada, la borra. Así se corrige un error.
   const marcar = (campo, valor) => {
-    const f = hoyISO();
-    const prev = (datos.registros || {})[f] || {};
-    guardar({ ...datos, registros: { ...(datos.registros || {}), [f]: { ...prev, [campo]: valor } } });
+    const prev = (datos.registros || {})[dia] || {};
+    const nuevo = { ...prev };
+    if (nuevo[campo] === valor) delete nuevo[campo];
+    else nuevo[campo] = valor;
+    const registros = { ...(datos.registros || {}) };
+    if (Object.keys(nuevo).length) registros[dia] = nuevo;
+    else delete registros[dia];
+    guardar({ ...datos, registros });
+  };
+
+  const borrarInicio = (fecha) => {
+    guardar({ ...datos, inicios: (datos.inicios || []).filter(f => f !== fecha) });
+    avisar("Fecha eliminada");
+  };
+
+  const cambiarDuracion = (valor) => {
+    const d = parseInt(valor, 10);
+    if (!d || d < 20 || d > 45) return;
+    guardar({ ...datos, duracion: d });
+  };
+
+  const desactivar = () => {
+    guardar({ ...datos, activo: false });
+    avisar("Seguimiento desactivado");
   };
 
   if (cargando) return <p className="text-center text-xs py-8" style={{ color: MUTED }}>Cargando…</p>;
@@ -1221,7 +1405,7 @@ function CicloView() {
   const diaActual = ultimo ? diffDias(ultimo, hoyISO()) + 1 : null;
   const proximo   = ultimo ? sumarDias(ultimo, dias) : null;
   const faltan    = proximo ? diffDias(hoyISO(), proximo) : null;
-  const hoyReg    = (datos.registros || {})[hoyISO()] || {};
+  const diaReg    = (datos.registros || {})[dia] || {};
   const totalRegs = Object.keys(datos.registros || {}).length;
   const pats      = calcularPatrones(datos);
 
@@ -1261,15 +1445,28 @@ function CicloView() {
         </div>
       </div>
 
-      {/* Cómo te sentís hoy */}
+      {/* Registro diario */}
       <div className="rounded-2xl p-4 space-y-3" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
-        <p className="text-xs font-semibold" style={{ color: TEXT }}>Cómo te sentís hoy</p>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-semibold" style={{ color: TEXT }}>
+            {dia === hoyISO() ? "Cómo te sentís hoy" : `Cómo te sentiste el ${fechaCorta(dia)}`}
+          </p>
+          <input type="date" value={dia} max={hoyISO()}
+            onChange={e => e.target.value && setDia(e.target.value)}
+            className="px-2 py-1 text-[11px] rounded-lg"
+            style={{ background: CARD2, color: MUTED, border: `1px solid ${BORDER}`, colorScheme: "dark" }} />
+        </div>
+        {dia !== hoyISO() && (
+          <button onClick={() => setDia(hoyISO())} className="text-[10px] underline" style={{ color: LIME }}>
+            Volver a hoy
+          </button>
+        )}
         {Object.entries(ESCALAS).map(([campo, { label, opciones }]) => (
           <div key={campo}>
             <p className="text-[10px] mb-1.5" style={{ color: MUTED }}>{label}</p>
             <div className="flex gap-1.5">
               {opciones.map(([val, txt]) => {
-                const sel = hoyReg[campo] === val;
+                const sel = diaReg[campo] === val;
                 return (
                   <button key={val} onClick={() => marcar(campo, val)}
                     className="flex-1 py-2 rounded-lg text-[11px] font-semibold transition-all active:scale-95"
@@ -1283,6 +1480,9 @@ function CicloView() {
             </div>
           </div>
         ))}
+        <p className="text-[10px]" style={{ color: MUTED }}>
+          Tocá de nuevo una opción marcada para borrarla.
+        </p>
       </div>
 
       {/* Patrón propio */}
@@ -1309,6 +1509,63 @@ function CicloView() {
             })}
             <p className="text-[10px] pt-2 leading-relaxed" style={{ color: MUTED }}>
               Es tu patrón personal, no una regla. Varía entre ciclos y entre personas.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Corregir datos */}
+      <div className="rounded-2xl p-4" style={{ background: CARD, border: `1px solid ${BORDER}` }}>
+        <button onClick={() => setAjustes(a => !a)}
+          className="w-full flex items-center justify-between text-xs font-semibold"
+          style={{ color: TEXT }}>
+          <span>Corregir datos</span>
+          <ChevronDown size={14} style={{ color: MUTED, transform: ajustes ? "rotate(180deg)" : "none", transition: "transform .2s" }} />
+        </button>
+
+        {ajustes && (
+          <div className="mt-4 space-y-4">
+            <div>
+              <p className="text-[10px] mb-2" style={{ color: MUTED }}>Fechas de inicio registradas</p>
+              {inicios.length === 0 ? (
+                <p className="text-[11px]" style={{ color: MUTED }}>Todavía no cargaste ninguna.</p>
+              ) : (
+                <div className="space-y-1">
+                  {[...inicios].reverse().map(f => (
+                    <div key={f} className="flex items-center justify-between py-1.5 px-2 rounded-lg"
+                      style={{ background: CARD2 }}>
+                      <span className="text-[11px]" style={{ color: TEXT }}>{fechaCorta(f)}</span>
+                      <button onClick={() => borrarInicio(f)}
+                        className="p-1 text-gray-600 hover:text-red-400 transition">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-[10px] mt-2 leading-relaxed" style={{ color: MUTED }}>
+                Si cargaste una fecha equivocada, borrala acá y volvé a cargarla arriba con la correcta.
+              </p>
+            </div>
+
+            <div>
+              <p className="text-[10px] mb-1.5" style={{ color: MUTED }}>Duración estimada del ciclo (días)</p>
+              <input type="number" min="20" max="45" defaultValue={datos.duracion}
+                onBlur={e => cambiarDuracion(e.target.value)}
+                className={`w-full px-3 py-2 text-sm ${INPUT}`} style={iStyle} />
+              <p className="text-[10px] mt-1.5 leading-relaxed" style={{ color: MUTED }}>
+                Solo se usa hasta que tengas dos períodos cargados. Después la app calcula tu
+                promedio real y este número deja de importar.
+              </p>
+            </div>
+
+            <button onClick={desactivar}
+              className="w-full py-2 rounded-xl text-[11px] font-semibold transition-all active:scale-[.98]"
+              style={{ background: RED_S, color: RED, border: `1px solid ${RED}33` }}>
+              Desactivar seguimiento
+            </button>
+            <p className="text-[10px] text-center" style={{ color: MUTED }}>
+              Tus datos quedan guardados por si lo volvés a activar.
             </p>
           </div>
         )}
@@ -1413,6 +1670,7 @@ function StudentPanel({ student, setStudent, frase }) {
   const [reportHtml, setReportHtml]   = useState(null);
   const [generatingPDF, setGeneratingPDF] = useState(false);
   const [guia, setGuia] = useState(false);
+  const [ficha, setFicha] = useState(false);
 
   // Se muestra sola la primera vez en este dispositivo
   useEffect(() => {
@@ -1501,14 +1759,14 @@ function StudentPanel({ student, setStudent, frase }) {
   const onChangeBlock = (exIdx, val) => mutate(exs => exs.map((ex, i) => i !== exIdx ? ex : { ...ex, blockTitle: val }));
   const onAdd = () => {
     if (!newEx.trim()) return;
-    if (student.exercises.length >= MAX_EX) { showToast("Límite de 10 ejercicios"); return; }
+    if (student.exercises.length >= MAX_EX) { showToast(`Llegaste al máximo de ${MAX_EX} ejercicios`); return; }
     mutate(exs => [...exs, emptyExercise(newEx.trim())]);
     setNewEx(""); setNewExInBlock(null);
   };
 
   const onAddToBlock = (blockKey) => {
     if (!newEx.trim()) return;
-    if (student.exercises.length >= MAX_EX) { showToast("Límite de 10 ejercicios"); return; }
+    if (student.exercises.length >= MAX_EX) { showToast(`Llegaste al máximo de ${MAX_EX} ejercicios`); return; }
     const blockTitle = blockKey === "__none__" || blockKey === "__global__" ? "" : blockKey;
     mutate(exs => [...exs, { ...emptyExercise(newEx.trim()), blockTitle }]);
     setNewEx(""); setNewExInBlock(null);
@@ -1538,6 +1796,7 @@ function StudentPanel({ student, setStudent, frase }) {
     <>
       {reportHtml && <ReportOverlay html={reportHtml} onClose={() => setReportHtml(null)} />}
       {guia && <ComoSeUsa onClose={cerrarGuia} />}
+      {ficha && <FichaAlumno student={student} setStudent={setStudent} onClose={() => setFicha(false)} />}
       <div className="min-h-screen" style={{ background: BG }}>
       {/* Header */}
       <div className="px-4 pt-10 pb-2">
@@ -1547,11 +1806,16 @@ function StudentPanel({ student, setStudent, frase }) {
             <h1 className="text-2xl font-bold text-white mt-0.5 truncate">{student.name.split(" ")[0]}</h1>
             {frase && <p className="text-xs mt-1.5 leading-snug" style={{ color: "#b4afc0" }}>{frase}</p>}
           </div>
-          <button onClick={() => setGuia(true)}
-            className="shrink-0 mr-2 self-start mt-1 text-gray-600 hover:text-gray-300 transition"
-            title="Cómo se usa">
-            <HelpCircle size={18} />
-          </button>
+          <div className="flex items-center gap-1 shrink-0 mr-2 self-start mt-1">
+            <button onClick={() => setFicha(true)}
+              className="text-gray-600 hover:text-gray-300 transition" title="Mi ficha">
+              <User size={18} />
+            </button>
+            <button onClick={() => setGuia(true)}
+              className="text-gray-600 hover:text-gray-300 transition" title="Cómo se usa">
+              <HelpCircle size={18} />
+            </button>
+          </div>
           <div className="relative">
             <ProgressRing pct={pct} size={60} />
             <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -1591,6 +1855,17 @@ function StudentPanel({ student, setStudent, frase }) {
             );
           })}
         </div>
+
+        {!fichaCompleta(student.perfil) && (
+          <button onClick={() => setFicha(true)}
+            className="w-full mb-3 px-4 py-3 rounded-xl flex items-center justify-between gap-3 transition-all active:scale-[.99]"
+            style={{ background: GOLD_S, border: `1px solid rgba(200,168,75,0.3)` }}>
+            <span className="text-xs text-left" style={{ color: TEXT }}>
+              Completá tu ficha para que el coach te arme mejor la rutina
+            </span>
+            <ArrowRight size={15} style={{ color: GOLD }} className="shrink-0" />
+          </button>
+        )}
 
         {/* View toggle */}
         <div className="flex gap-1 p-1 rounded-xl" style={{ background: CARD2 }}>
@@ -1779,7 +2054,7 @@ function StudentPanel({ student, setStudent, frase }) {
                 <input value={newExInBlock === "__global__" ? newEx : ""} onFocus={() => setNewExInBlock("__global__")}
                   onChange={e => { setNewExInBlock("__global__"); setNewEx(e.target.value); }}
                   onKeyDown={e => { if (e.key === "Enter") onAdd(); }}
-                  placeholder={student.exercises.length >= MAX_EX ? "Límite de 10 ejercicios" : blocks.length > 0 ? "Ejercicio sin categoría..." : "Nuevo ejercicio..."}
+                  placeholder={student.exercises.length >= MAX_EX ? `Máximo ${MAX_EX} ejercicios` : blocks.length > 0 ? "Ejercicio sin categoría..." : "Nuevo ejercicio..."}
                   disabled={student.exercises.length >= MAX_EX}
                   className={`flex-1 px-4 py-3 text-sm ${INPUT} disabled:opacity-40`} style={iStyle} />
                 <button onClick={onAdd} disabled={newExInBlock !== "__global__" || !newEx.trim() || student.exercises.length >= MAX_EX}
@@ -1934,6 +2209,18 @@ function AdminPanel({ students, users, setUsers, setStudents, frase, setFrase })
   const [saving, setSaving] = useState(false);
   const [fraseEdit, setFraseEdit] = useState(frase || "");
   const [verBajas, setVerBajas] = useState(false);
+  const [claveDe, setClaveDe] = useState(null);   // alumno al que le estoy cambiando la clave
+  const [claveNueva, setClaveNueva] = useState("");
+  const [claveMsg, setClaveMsg] = useState("");
+
+  const cambiarClave = async (alumno) => {
+    if (claveNueva.length < 6) { setClaveMsg("Mínimo 6 caracteres"); return; }
+    setClaveMsg("Cambiando…");
+    const res = await resetPassword(alumno.id, claveNueva);
+    if (res.error) { setClaveMsg(res.error); return; }
+    setClaveDe(null); setClaveNueva(""); setClaveMsg("");
+    showToast(`✓ Contraseña de ${alumno.name} actualizada`);
+  };
 
   const guardarFrase = async () => {
     const ok = await saveFrase(fraseEdit.trim());
@@ -2016,6 +2303,48 @@ function AdminPanel({ students, users, setUsers, setStudents, frase, setFrase })
               ))}
             </div>
           )}
+
+          {/* Ficha */}
+          {(() => {
+            const f = s.perfil || {};
+            const edad = calcularEdad(f.nacimiento);
+            const filas = [
+              ["Edad", edad != null ? `${edad} años` : null],
+              ["Sexo", f.sexo],
+              ["Celular", f.celular],
+              ["Objetivo", f.objetivo],
+              ["Entrenando hace", f.experiencia],
+              ["Suplementos", f.suplementos],
+              ["Nutrición", f.nutricion],
+            ].filter(([, v]) => v);
+            if (!filas.length && !f.lesiones) return (
+              <div className="rounded-2xl p-4 mb-4" style={{ background: CARD, border: "1px solid #242424" }}>
+                <p className="text-xs font-semibold text-gray-400 mb-1">Ficha</p>
+                <p className="text-[11px]" style={{ color: MUTED }}>
+                  Todavía no la completó. Le aparece un aviso al abrir la app.
+                </p>
+              </div>
+            );
+            return (
+              <div className="rounded-2xl p-4 mb-4" style={{ background: CARD, border: "1px solid #242424" }}>
+                <p className="text-xs font-semibold text-gray-400 mb-3">Ficha</p>
+                <div className="space-y-1.5">
+                  {filas.map(([k, v]) => (
+                    <div key={k} className="flex items-start justify-between gap-3">
+                      <span className="text-[11px] shrink-0" style={{ color: MUTED }}>{k}</span>
+                      <span className="text-[11px] text-right" style={{ color: TEXT }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+                {f.lesiones && (
+                  <div className="mt-3 pt-3" style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <p className="text-[11px] mb-1" style={{ color: RED }}>Lesiones y molestias</p>
+                    <p className="text-[11px] leading-relaxed whitespace-pre-wrap" style={{ color: TEXT }}>{f.lesiones}</p>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Ciclo */}
           {s.ciclo?.activo && (() => {
@@ -2310,7 +2639,8 @@ function AdminPanel({ students, users, setUsers, setStudents, frase, setFrase })
             {active.map(s => {
               const u = users.find(u => u.role === "alumno" && u.studentId === s.id);
               return (
-                <div key={s.id} className="flex items-center gap-3 rounded-2xl px-4 py-3 transition"
+                <React.Fragment key={s.id}>
+                <div className="flex items-center gap-3 rounded-2xl px-4 py-3 transition"
                   style={{ background: CARD, border: "1px solid #242424" }}>
                   <Avatar name={s.name} size={9} gold />
                   <div className="flex-1 min-w-0">
@@ -2323,11 +2653,37 @@ function AdminPanel({ students, users, setUsers, setStudents, frase, setFrase })
                       <button onClick={() => setConfirmOff(null)} className="px-2 py-1 rounded-lg text-[11px]" style={{ background: "#333", color: "#aaa" }}>No</button>
                     </div>
                   ) : (
-                    <button onClick={() => setConfirmOff(s.id)} className="shrink-0 text-gray-700 hover:text-red-400 transition" title="Dar de baja">
-                      <UserX size={16} />
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button onClick={() => { setClaveDe(claveDe === s.id ? null : s.id); setClaveNueva(""); setClaveMsg(""); }}
+                        className="text-gray-700 hover:text-yellow-400 transition" title="Cambiar contraseña">
+                        <Lock size={15} />
+                      </button>
+                      <button onClick={() => setConfirmOff(s.id)} className="text-gray-700 hover:text-red-400 transition" title="Dar de baja">
+                        <UserX size={16} />
+                      </button>
+                    </div>
                   )}
                 </div>
+                {claveDe === s.id && (
+                  <div className="rounded-2xl px-4 py-3 -mt-1 space-y-2"
+                    style={{ background: CARD2, border: `1px solid ${BORDER}` }}>
+                    <p className="text-[11px]" style={{ color: MUTED }}>
+                      Nueva contraseña para {s.name}. Avisale cuál es: no le llega ningún mail.
+                    </p>
+                    <div className="flex gap-2">
+                      <input value={claveNueva} onChange={e => setClaveNueva(e.target.value)}
+                        placeholder="Mínimo 6 caracteres" autoCapitalize="none" autoCorrect="off"
+                        className={`flex-1 px-3 py-2 text-sm ${INPUT}`} style={iStyle} />
+                      <button onClick={() => cambiarClave(s)}
+                        className="px-4 rounded-xl text-xs font-bold transition-all active:scale-95"
+                        style={{ background: GOLD, color: "#1a1300" }}>
+                        Cambiar
+                      </button>
+                    </div>
+                    {claveMsg && <p className="text-[11px]" style={{ color: claveMsg === "Cambiando…" ? MUTED : RED }}>{claveMsg}</p>}
+                  </div>
+                )}
+                </React.Fragment>
               );
             })}
 
@@ -2397,6 +2753,51 @@ function Header({ name, role, onLogout, estado, pendientes }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ─── AJUSTES PARA CELULAR ────────────────────────────────────
+   Safari en iPhone hace zoom solo al tocar un campo con letra
+   menor a 16px, y después la página queda más ancha que la
+   pantalla. Esto lo evita, y de paso arregla el alto y el scroll. */
+
+function EstilosMobile() {
+  return (
+    <style>{`
+      html { -webkit-text-size-adjust: 100%; }
+
+      /* Solo en pantallas táctiles: 16px es el mínimo que evita el zoom */
+      @media (pointer: coarse) {
+        input, select, textarea { font-size: 16px !important; }
+      }
+
+      /* En iPhone, 100vh incluye la barra de direcciones y el scroll salta.
+         100dvh usa el alto real y disponible en cada momento. */
+      @supports (min-height: 100dvh) {
+        .min-h-screen { min-height: 100dvh; }
+      }
+
+      /* Que el gráfico nunca empuje la página a lo ancho */
+      .recharts-wrapper, .recharts-surface { max-width: 100% !important; }
+
+      /* Respeta el notch y la barra inferior del iPhone. Con la app
+         instalada en la pantalla de inicio, el contenido pasa por debajo
+         de la barra de estado; esto lo baja lo justo. */
+      body {
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+      }
+
+      /* Sin el destello gris al tocar un botón */
+      * { -webkit-tap-highlight-color: transparent; }
+
+      /* Las barras que se deslizan a lo ancho, con inercia y sin barra visible */
+      .overflow-x-auto {
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+      }
+      .overflow-x-auto::-webkit-scrollbar { display: none; }
+    `}</style>
   );
 }
 
@@ -2475,7 +2876,7 @@ export default function App() {
     </div>
   );
 
-  if (!me) return <Login users={users} setUsers={setUsers} students={students} setStudents={setStudents} onLogin={bootstrap} />;
+  if (!me) return <><EstilosMobile /><Login users={users} setUsers={setUsers} students={students} setStudents={setStudents} onLogin={bootstrap} /></>;
 
   const myStudent = me.role === "alumno" ? students.find(s => s.id === me.studentId) : null;
   const displayName = me.role === "admin" ? (me.name || me.username) : myStudent?.name;
@@ -2489,6 +2890,7 @@ export default function App() {
         input[type=date]::-webkit-calendar-picker-indicator { filter:invert(1); opacity:0.5; }
         * { box-sizing: border-box; }
       `}</style>
+      <EstilosMobile />
       <Header name={displayName} role={me.role} onLogout={handleLogout}
         estado={sync.estado} pendientes={sync.pendientes} />
       <div className="max-w-2xl mx-auto">

@@ -72,6 +72,7 @@ function filaAAlumno(p, fila, filaCiclo) {
     lastDay: d.lastDay || "Aún no registra",
     exercises: d.exercises || [],
     blocks: d.blocks || [],
+    perfil: d.perfil || {},
   };
 }
 
